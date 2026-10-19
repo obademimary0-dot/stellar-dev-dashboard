@@ -3,7 +3,19 @@
  *
  * Converts dashboard data (account info, transactions, assets, settings)
  * to JSON or CSV and triggers a browser download.
+ *
+ * Every export is checked for completeness before the browser is asked to
+ * save it (#1203, see lib/exportIntegrity.ts): a truncated or partial file
+ * raises an `ExportIntegrityError` instead of being downloaded.
  */
+
+import {
+  ExportIntegrityError,
+  assertExportIntact,
+  createManifest,
+} from "../lib/exportIntegrity";
+
+const utf8ByteLength = (text) => new TextEncoder().encode(text).length;
 
 /**
  * Trigger a file download in the browser.
@@ -13,6 +25,19 @@
  */
 export function downloadFile(content, filename, mimeType = "application/json") {
   const blob = new Blob([content], { type: mimeType });
+  if (typeof content === "string" && blob.size !== utf8ByteLength(content)) {
+    // The blob did not take all of the text (e.g. it hit a size limit).
+    throw new ExportIntegrityError({
+      ok: false,
+      issues: [
+        {
+          code: "SIZE_MISMATCH",
+          message: `The file holds ${blob.size} bytes but ${utf8ByteLength(content)} were generated.`,
+        },
+      ],
+      actual: { byteLength: blob.size, checksum: "", rowCount: null },
+    });
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -37,15 +62,16 @@ export function exportCsv(rows, filename, columns) {
   const cols = columns || Object.keys(rows[0]);
   const escape = (v) => {
     const s = v == null ? "" : String(v);
-    return s.includes(",") || s.includes('"') || s.includes("\n")
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
+    // A bare \r is a row break to every CSV reader, so it must be quoted too.
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [
     cols.join(","),
     ...rows.map((row) => cols.map((c) => escape(row[c])).join(",")),
   ];
-  downloadFile(lines.join("\r\n"), `${filename}.csv`, "text/csv");
+  const content = lines.join("\r\n");
+  assertExportIntact(content, createManifest(content, "csv", rows.length));
+  downloadFile(content, `${filename}.csv`, "text/csv");
 }
 
 /**
@@ -54,7 +80,15 @@ export function exportCsv(rows, filename, columns) {
  * @param {string} filename - Download filename (without extension)
  */
 export function exportJson(data, filename) {
-  downloadFile(JSON.stringify(data, null, 2), `${filename}.json`);
+  const content = JSON.stringify(data, null, 2);
+  if (typeof content !== "string") {
+    throw new Error("Nothing to export: the data cannot be serialised to JSON.");
+  }
+  assertExportIntact(
+    content,
+    createManifest(content, "json", Array.isArray(data) ? data.length : null),
+  );
+  downloadFile(content, `${filename}.json`);
 }
 
 function escapePdfString(text) {
@@ -105,11 +139,13 @@ function buildPdfBlob(text) {
   }
 
   const trailer = `trailer << /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
-  return new Blob([...components, xrefEntries.join(''), trailer], { type: 'application/pdf' });
+  const parts = [...components, xrefEntries.join(''), trailer];
+  return { blob: new Blob(parts, { type: 'application/pdf' }), text: parts.join('') };
 }
 
 export function exportPdf(text, filename) {
-  const blob = buildPdfBlob(text);
+  const { blob, text: pdfText } = buildPdfBlob(text);
+  assertExportIntact(pdfText, createManifest(pdfText, 'pdf'));
   downloadFile(blob, `${filename}.pdf`, 'application/pdf');
 }
 
@@ -190,3 +226,65 @@ export function exportHistoricalBalances(history, filename = "portfolio-history"
   });
   exportCsv(rows, filename, ["Timestamp", "Balance", "Asset"]);
 }
+
+/**
+ * Export an array of objects to a Parquet file.
+ * Requires parquet-wasm and apache-arrow to be available.
+ * @param {Object[]} rows       - Data rows
+ * @param {string}   filename   - Download filename (without extension)
+ */
+export async function exportParquet(rows, filename) {
+  if (!rows || rows.length === 0) {
+    throw new Error("Cannot export empty data to Parquet.");
+  }
+
+  let arrow, parquet;
+  try {
+    arrow = await import("apache-arrow");
+    parquet = await import("parquet-wasm");
+  } catch (err) {
+    throw new Error("Parquet export is not supported in this environment (missing dependencies).");
+  }
+
+  try {
+    await parquet.default();
+
+    const columns = {};
+    const keys = Object.keys(rows[0]);
+    keys.forEach((k) => {
+      columns[k] = rows.map((r) => (r[k] == null ? "" : String(r[k])));
+    });
+
+    const table = arrow.tableFromArrays(columns);
+    const ipc = arrow.tableToIPC(table);
+    const parquetBytes = parquet.writeParquet(ipc);
+    // A Parquet file is only complete if it still ends with its PAR1 footer.
+    assertExportIntact(parquetBytes, createManifest(parquetBytes, "parquet"));
+
+    const blob = new Blob([parquetBytes], { type: "application/vnd.apache.parquet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${filename}.parquet`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    throw new Error("Parquet serialization failed: " + err.message);
+  }
+}
+
+/**
+ * Export an array of objects to a JSON array file.
+ * @param {Object[]} rows       - Data rows
+ * @param {string}   filename   - Download filename (without extension)
+ */
+export function exportRowsJson(rows, filename) {
+  if (!rows || rows.length === 0) {
+    downloadFile("[]", `${filename}.json`, "application/json");
+    return;
+  }
+  exportJson(rows, filename);
+}
+

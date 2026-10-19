@@ -4,21 +4,40 @@
  * Provides export/import actions bound to the live Zustand store state.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useStore } from "../lib/store";
 import {
   buildBackupPayload,
   exportJson,
   exportCsv,
+  exportRowsJson,
+  exportParquet,
   flattenTransaction,
   flattenBalance,
 } from "../utils/export";
 import { readFileAsText, parseBackup, validateBackupPayload, applyBackupToStore } from "../lib/import";
+import { assertDatasetComplete } from "../lib/exportIntegrity";
+import { isParseAbortedError } from "../lib/boundedParser";
+
+export type ExportFormat = "csv" | "json" | "parquet";
 
 /**
  * A generic exportable row (transaction or balance record).
  */
 export type ExportableRow = Record<string, unknown>;
+
+/**
+ * Options for {@link UseDataExportReturn.exportTransactions} and
+ * {@link UseDataExportReturn.exportBalances}.
+ */
+export interface ExportOptions {
+  /**
+   * How many rows the source says exist in total. When fewer rows were loaded
+   * (a page failed, or the fetch stopped early) the export is refused instead
+   * of silently producing a partial file (#1203).
+   */
+  expectedTotal?: number;
+}
 
 /**
  * Return value of the {@link useDataExport} hook.
@@ -30,9 +49,11 @@ export interface UseDataExportReturn {
   importError: string | null;
   importSuccess: boolean;
   exportDashboard: () => void;
-  exportTransactions: (transactions: ExportableRow[]) => void;
-  exportBalances: (balances: ExportableRow[]) => void;
+  exportTransactions: (transactions: ExportableRow[], format?: ExportFormat, _options?: ExportOptions) => Promise<void>;
+  exportBalances: (balances: ExportableRow[], format?: ExportFormat, _options?: ExportOptions) => Promise<void>;
   importBackup: (file: File) => Promise<void>;
+  /** Stops an import in progress (#1205). Safe to call when none is running. */
+  cancelImport: () => void;
 }
 
 /**
@@ -45,6 +66,11 @@ export function useDataExport(): UseDataExportReturn {
   const [exportError, setExportError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<boolean>(false);
+  const importAbort = useRef<AbortController | null>(null);
+
+  const cancelImport = useCallback((): void => {
+    importAbort.current?.abort();
+  }, []);
 
   const exportDashboard = useCallback((): void => {
     setIsExporting(true);
@@ -62,12 +88,19 @@ export function useDataExport(): UseDataExportReturn {
     }
   }, [store]);
 
-  const exportTransactions = useCallback((transactions: ExportableRow[]): void => {
+  const exportTransactions = useCallback(async (transactions: ExportableRow[], format: ExportFormat = "csv", options: ExportOptions = {}): Promise<void> => {
     setIsExporting(true);
     setExportError(null);
     try {
       const rows = (transactions || []).map(flattenTransaction);
-      exportCsv(rows, "stellar-transactions");
+      assertDatasetComplete(rows.length, options.expectedTotal);
+      if (format === "csv") {
+        exportCsv(rows, "stellar-transactions");
+      } else if (format === "json") {
+        exportRowsJson(rows, "stellar-transactions");
+      } else if (format === "parquet") {
+        await exportParquet(rows, "stellar-transactions");
+      }
     } catch (err) {
       setExportError(err.message);
     } finally {
@@ -75,12 +108,19 @@ export function useDataExport(): UseDataExportReturn {
     }
   }, []);
 
-  const exportBalances = useCallback((balances: ExportableRow[]): void => {
+  const exportBalances = useCallback(async (balances: ExportableRow[], format: ExportFormat = "csv", options: ExportOptions = {}): Promise<void> => {
     setIsExporting(true);
     setExportError(null);
     try {
       const rows = (balances || []).map(flattenBalance);
-      exportCsv(rows, "stellar-balances");
+      assertDatasetComplete(rows.length, options.expectedTotal);
+      if (format === "csv") {
+        exportCsv(rows, "stellar-balances");
+      } else if (format === "json") {
+        exportRowsJson(rows, "stellar-balances");
+      } else if (format === "parquet") {
+        await exportParquet(rows, "stellar-balances");
+      }
     } catch (err) {
       setExportError(err.message);
     } finally {
@@ -90,11 +130,14 @@ export function useDataExport(): UseDataExportReturn {
 
   const importBackup = useCallback(
     async (file: File): Promise<void> => {
+      importAbort.current?.abort(); // a new import replaces any running one
+      const controller = new AbortController();
+      importAbort.current = controller;
       setIsImporting(true);
       setImportError(null);
       setImportSuccess(false);
       try {
-        const text = await readFileAsText(file);
+        const text = await readFileAsText(file, { signal: controller.signal });
         const result = parseBackup(text);
         if (!result.ok) {
           setImportError(result.error);
@@ -108,9 +151,12 @@ export function useDataExport(): UseDataExportReturn {
         applyBackupToStore(result.data, store);
         setImportSuccess(true);
       } catch (err) {
-        setImportError(err.message);
+        setImportError(isParseAbortedError(err) ? "Import cancelled." : err.message);
       } finally {
-        setIsImporting(false);
+        if (importAbort.current === controller) {
+          importAbort.current = null;
+          setIsImporting(false);
+        }
       }
     },
     [store],
@@ -126,5 +172,6 @@ export function useDataExport(): UseDataExportReturn {
     exportTransactions,
     exportBalances,
     importBackup,
+    cancelImport,
   };
 }

@@ -27,6 +27,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { TOOLTIP_STYLE, AXIS_TICK_STYLE } from '../../lib/chartUtils'
+import { ProvenanceBadge } from '../common/ProvenanceBadge'
 import {
   analyzeNetworkFees,
   generateSyntheticFeeHistory,
@@ -335,8 +336,21 @@ export default function NetworkFeeForecast() {
             padding: '12px',
           }}
         >
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            Historical fees (48h) + 24h forecast band
+          <div
+            style={{
+              fontSize: '12px',
+              color: 'var(--text-muted)',
+              marginBottom: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <span>Historical fees (48h) + 24h forecast band</span>
+            {/* The history is generated sample data; the band is a model forecast (#1206). */}
+            <ProvenanceBadge provenance="demo" />
+            <ProvenanceBadge provenance="predicted" />
           </div>
           <div style={{ width: '100%', height: 320 }}>
             <ResponsiveContainer>

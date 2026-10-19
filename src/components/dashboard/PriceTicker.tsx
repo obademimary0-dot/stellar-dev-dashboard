@@ -2,16 +2,19 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../lib/store';
 import { fetchXLMPrice } from '../../lib/priceFeed';
 import { RefreshCw } from 'lucide-react';
+import { ProvenanceBadge } from '../common/ProvenanceBadge';
 
 export default function PriceTicker() {
-  const { prices, setPrices, setPricesLoading, setPricesError } = useStore();
+  const { prices, pricesError, setPrices, setPricesLoading, setPricesError } = useStore();
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const loadPrice = useCallback(async (forceRefresh = false) => {
     setPricesLoading(true);
     try {
       const xlmPrice = await fetchXLMPrice({ forceRefresh });
-      setPrices({ ...prices, XLM: xlmPrice });
+      // Read the latest prices at call time: depending on `prices` here would
+      // recreate this callback on every update and re-run the fetch effect in a loop.
+      setPrices({ ...useStore.getState().prices, XLM: xlmPrice });
       setLastUpdated(new Date());
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -19,7 +22,7 @@ export default function PriceTicker() {
     } finally {
       setPricesLoading(false);
     }
-  }, [prices, setPrices, setPricesLoading, setPricesError]);
+  }, [setPrices, setPricesLoading, setPricesError]);
 
   useEffect(() => {
     loadPrice();
@@ -72,6 +75,12 @@ export default function PriceTicker() {
         </>
       ) : (
         <span style={{ color: 'var(--text-muted)' }}>—</span>
+      )}
+      {xlm?.usd !== null && xlm?.usd !== undefined && (
+        // Refreshes every 60s; two missed refreshes make the value "cached" (#1206).
+        <ProvenanceBadge
+          signals={{ fetchedAt: lastUpdated, hasError: Boolean(pricesError), staleAfterMs: 3 * 60_000 }}
+        />
       )}
       <button
         type="button"

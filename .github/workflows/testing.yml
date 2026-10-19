@@ -31,11 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -86,11 +86,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -117,11 +117,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -131,6 +131,12 @@ jobs:
 
       - name: Run Stryker mutation tests
         run: pnpm exec stryker run
+
+      # ── Fee-math mutation gate (#895) ────────────────────────────────────
+      # Blocks the build when the mutation score for critical fee math
+      # (stroop conversion + fee estimation) falls below the 70% threshold.
+      - name: Fee-math mutation gate
+        run: pnpm run test:mutation:feemath
 
       - name: Upload mutation report
         if: always()
@@ -149,11 +155,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -207,11 +213,11 @@ jobs:
         with:
           fetch-depth: 0 # Fetch full history for regression correlation
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -268,11 +274,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -298,12 +304,56 @@ jobs:
           retention-days: 14
 
   # ══════════════════════════════════════════════════════════════════════════
+  # Step 6 — Interaction latency budgets (#1208)
+  # ══════════════════════════════════════════════════════════════════════════
+  # Drives the high-traffic dashboard flows in Chromium and fails when the p75
+  # of input-to-paint or time-to-result exceeds the budgets in
+  # scripts/interaction-budgets.cjs. Runs against the dev server (the
+  # Playwright default) so it does not depend on a production build.
+  interaction-latency:
+    name: Interaction Latency Budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+
+      # The app imports the workspace core package from its build output.
+      # tsc emits despite diagnostics about test files outside rootDir.
+      - name: Build workspace core package
+        run: pnpm --filter @stellar-dev-dashboard/core run build || true
+
+      - name: Run interaction latency budgets
+        run: pnpm run test:interaction-latency
+        env:
+          CI: 'true'
+
+      - name: Upload latency report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: interaction-latency-report
+          path: tests/e2e/report/
+          retention-days: 14
+
+  # ══════════════════════════════════════════════════════════════════════════
   # Testing framework summary gate
   # ══════════════════════════════════════════════════════════════════════════
   testing-gate:
     name: Testing Framework Gate
     runs-on: ubuntu-latest
-    needs: [visual-regression, coverage-gate, lighthouse-ci, accessibility-gate]
+    needs: [visual-regression, coverage-gate, lighthouse-ci, accessibility-gate, interaction-latency]
     if: always()
     steps:
       - name: Summarize testing pipeline
@@ -315,13 +365,15 @@ jobs:
           echo "| Coverage Gate | ${{ needs.coverage-gate.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Lighthouse CI | ${{ needs.lighthouse-ci.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Accessibility Gate | ${{ needs.accessibility-gate.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Interaction Latency | ${{ needs.interaction-latency.result }} |" >> "$GITHUB_STEP_SUMMARY"
 
           FAILED=0
           for result in \
             "${{ needs.visual-regression.result }}" \
             "${{ needs.coverage-gate.result }}" \
             "${{ needs.lighthouse-ci.result }}" \
-            "${{ needs.accessibility-gate.result }}"; do
+            "${{ needs.accessibility-gate.result }}" \
+            "${{ needs.interaction-latency.result }}"; do
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
               FAILED=1
             fi

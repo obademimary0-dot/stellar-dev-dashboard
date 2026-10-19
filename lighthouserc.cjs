@@ -16,6 +16,7 @@ const {
   DEFAULT_CHROME_FLAGS,
   getDeviceBudgets,
 } = require('./scripts/lighthouse-budgets.cjs');
+const { withInteractionAssertions } = require('./scripts/interaction-budgets.cjs');
 
 const device = (
   process.env.LHCI_PRESET ||
@@ -51,7 +52,9 @@ module.exports = {
     },
     assert: {
       includePassedAssertions: true,
-      assertMatrix: generateAssertMatrix(device),
+      // Page-load budgets plus the max-potential-fid warning from the shared
+      // interaction latency budgets (#1208); see docs/INTERACTION_LATENCY_BUDGETS.md.
+      assertMatrix: withInteractionAssertions(generateAssertMatrix(device), device),
     },
     upload: {
       target: 'temporary-public-storage',

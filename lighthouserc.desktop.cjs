@@ -13,6 +13,7 @@ const {
   DEFAULT_CHROME_FLAGS,
   getDeviceBudgets,
 } = require('./scripts/lighthouse-budgets.cjs');
+const { withInteractionAssertions } = require('./scripts/interaction-budgets.cjs');
 
 const deviceProfile = getDeviceBudgets('desktop');
 
@@ -42,7 +43,7 @@ module.exports = {
     },
     assert: {
       includePassedAssertions: true,
-      assertMatrix: generateAssertMatrix('desktop'),
+      assertMatrix: withInteractionAssertions(generateAssertMatrix('desktop'), 'desktop'),
     },
     upload: {
       target: 'temporary-public-storage',

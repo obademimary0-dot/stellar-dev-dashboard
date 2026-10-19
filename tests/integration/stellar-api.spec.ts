@@ -37,7 +37,7 @@ describe('Stellar API integration (MSW)', () => {
   })
 
   it('fetchAccount loads account data', async () => {
-    const publicKey = 'GTESTACCOUNT'
+    const publicKey = Keypair.random().publicKey()
     const account = await fetchAccount(publicKey)
     expect(account.account_id).toBe(publicKey)
     expect(account.balances?.length).toBeGreaterThan(0)

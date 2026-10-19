@@ -7,6 +7,18 @@
  */
 
 import { getRecoveryPlanner } from './recoveryPlanner';
+import { MIB, readTextBounded } from './boundedParser';
+
+/** Largest backup file accepted. Real backups are a few KiB; this is generous. */
+export const MAX_IMPORT_BYTES = 10 * MIB;
+
+export interface ReadFileOptions {
+  /** Stops the read; rejects with a `ParseAbortedError`. */
+  signal?: AbortSignal;
+  /** Overrides {@link MAX_IMPORT_BYTES}. */
+  maxBytes?: number;
+  onProgress?: (_progress: { bytesRead: number; totalBytes: number | null; rows: number }) => void;
+}
 
 const SUPPORTED_VERSIONS = [1, 2];
 
@@ -39,15 +51,19 @@ export function parseBackup(jsonString) {
 
 /**
  * Read a File object and return its text content as a promise.
+ *
+ * The file is read in chunks (#1205): files over `maxBytes` are rejected with
+ * a `ParseLimitError` before any content is read, and the read can be stopped
+ * through `signal`, rejecting with a `ParseAbortedError`.
  * @param {File} file
+ * @param {{ signal?: AbortSignal, maxBytes?: number, onProgress?: Function }} [options]
  * @returns {Promise<string>}
  */
-export function readFileAsText(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => resolve(e.target.result);
-    reader.onerror = () => reject(new Error("Could not read file."));
-    reader.readAsText(file);
+export function readFileAsText(file, options: ReadFileOptions = {}) {
+  return readTextBounded(file, {
+    signal: options.signal,
+    limits: { maxBytes: options.maxBytes ?? MAX_IMPORT_BYTES },
+    onProgress: options.onProgress,
   });
 }
 
